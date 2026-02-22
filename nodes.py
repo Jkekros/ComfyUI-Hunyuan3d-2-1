@@ -1978,10 +1978,21 @@ class Hy3D21FitLatent:
         device = latents.device
         dtype = latents.dtype
         
+        # Debug: Print input shape
+        print(f"Input latent shape: {latents.shape}, dtype: {dtype}, device: {device}")
+        
+        # Validate input shape
+        if len(latents.shape) != 3:
+            raise ValueError(f"Expected latent shape [batch, num_latents, embed_dim], got {latents.shape}")
+        
         # latents shape is typically [batch, num_latents, embed_dim]
         batch_size = latents.shape[0]
         current_size = latents.shape[1]
         embed_dim = latents.shape[2]
+        
+        # Validate non-zero dimensions
+        if batch_size == 0 or current_size == 0 or embed_dim == 0:
+            raise ValueError(f"Latent has zero-sized dimension: batch={batch_size}, num_latents={current_size}, embed_dim={embed_dim}")
         
         print(f"Fitting latent from {current_size} to {target_size} using mode '{mode}'")
         
@@ -1989,9 +2000,13 @@ class Hy3D21FitLatent:
             print("Latent already at target size, no adjustment needed")
             return (latents,)
         
+        if target_size <= 0:
+            raise ValueError(f"Target size must be positive, got {target_size}")
+        
         if mode == "interpolate":
             # Reshape for interpolation: [B, C, L] where L is the sequence length
-            latents_reshaped = latents.transpose(1, 2)  # [B, embed_dim, num_latents]
+            latents_reshaped = latents.permute(0, 2, 1)  # [B, embed_dim, num_latents]
+            print(f"Reshaped for interpolation: {latents_reshaped.shape}")
             
             # Interpolate along the latent dimension
             fitted_latents = F.interpolate(
@@ -2000,9 +2015,10 @@ class Hy3D21FitLatent:
                 mode='linear', 
                 align_corners=False
             )
+            print(f"After interpolation: {fitted_latents.shape}")
             
             # Transpose back: [B, num_latents, embed_dim]
-            fitted_latents = fitted_latents.transpose(1, 2)
+            fitted_latents = fitted_latents.permute(0, 2, 1)
             
         elif mode == "pad":
             if current_size < target_size:
@@ -2036,8 +2052,109 @@ class Hy3D21FitLatent:
         else:
             raise ValueError(f"Unknown mode: {mode}")
         
+        # Validate output shape
+        if len(fitted_latents.shape) != 3 or fitted_latents.shape[1] != target_size:
+            raise ValueError(f"Output shape mismatch. Expected [*, {target_size}, *], got {fitted_latents.shape}")
+        
         print(f"Fitted latent shape: {fitted_latents.shape}")
         return (fitted_latents,)
+
+class Hy3D21BlendLatents:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents_a": ("HY3DLATENT", {"tooltip": "First latent to blend"}),
+                "latents_b": ("HY3DLATENT", {"tooltip": "Second latent to blend"}),
+                "blend_factor": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "Blend ratio: 0.0=only A, 0.5=equal mix, 1.0=only B"}),
+                "auto_fit": ("BOOLEAN", {"default": True, "tooltip": "Automatically resize latents to match if sizes differ"}),
+            },
+        }
+
+    RETURN_TYPES = ("HY3DLATENT",)
+    RETURN_NAMES = ("latents",)
+    FUNCTION = "blend"
+    CATEGORY = "Hunyuan3D21Wrapper"
+    DESCRIPTION = "Blends two latents together. Automatically handles size mismatches if auto_fit is enabled."
+
+    def blend(self, latents_a, latents_b, blend_factor, auto_fit):
+        print(f"Blending latents - Shape A: {latents_a.shape}, Shape B: {latents_b.shape}, factor: {blend_factor}")
+        
+        # Validate inputs
+        if len(latents_a.shape) != 3 or len(latents_b.shape) != 3:
+            raise ValueError(f"Expected 3D latent tensors, got shapes: {latents_a.shape}, {latents_b.shape}")
+        
+        # Check if shapes match
+        if latents_a.shape != latents_b.shape:
+            if not auto_fit:
+                raise ValueError(f"Latent shapes don't match: {latents_a.shape} vs {latents_b.shape}. Enable auto_fit or use Hy3D21FitLatent node first.")
+            
+            print(f"Auto-fitting latents to match dimensions...")
+            
+            # Fit to the larger size
+            batch_a, size_a, dim_a = latents_a.shape
+            batch_b, size_b, dim_b = latents_b.shape
+            
+            # Use the maximum dimensions
+            target_batch = max(batch_a, batch_b)
+            target_size = max(size_a, size_b)
+            target_dim = max(dim_a, dim_b)
+            
+            # Fit latent A if needed
+            if size_a != target_size or dim_a != target_dim:
+                print(f"Fitting latent A from [{batch_a}, {size_a}, {dim_a}] to [{target_batch}, {target_size}, {target_dim}]")
+                latents_a = self._fit_latent(latents_a, target_size, target_dim)
+            
+            # Fit latent B if needed
+            if size_b != target_size or dim_b != target_dim:
+                print(f"Fitting latent B from [{batch_b}, {size_b}, {dim_b}] to [{target_batch}, {target_size}, {target_dim}]")
+                latents_b = self._fit_latent(latents_b, target_size, target_dim)
+            
+            # Handle batch size mismatch
+            if batch_a != batch_b:
+                if batch_a == 1:
+                    latents_a = latents_a.repeat(batch_b, 1, 1)
+                elif batch_b == 1:
+                    latents_b = latents_b.repeat(batch_a, 1, 1)
+                else:
+                    raise ValueError(f"Cannot auto-fit batch sizes: {batch_a} vs {batch_b}")
+        
+        # Ensure same device and dtype
+        if latents_a.device != latents_b.device:
+            latents_b = latents_b.to(latents_a.device)
+        if latents_a.dtype != latents_b.dtype:
+            latents_b = latents_b.to(latents_a.dtype)
+        
+        # Perform weighted blend
+        blended = latents_a * (1.0 - blend_factor) + latents_b * blend_factor
+        
+        print(f"Blended latent shape: {blended.shape}")
+        return (blended,)
+    
+    def _fit_latent(self, latent, target_size, target_dim):
+        """Helper function to fit latent to target dimensions"""
+        device = latent.device
+        dtype = latent.dtype
+        batch, current_size, current_dim = latent.shape
+        
+        # Fit num_latents dimension
+        if current_size != target_size:
+            latent_reshaped = latent.permute(0, 2, 1)  # [B, D, N]
+            latent_reshaped = F.interpolate(latent_reshaped, size=target_size, mode='linear', align_corners=False)
+            latent = latent_reshaped.permute(0, 2, 1)  # [B, N, D]
+        
+        # Fit embed_dim dimension
+        if current_dim != target_dim:
+            if current_dim < target_dim:
+                # Pad
+                pad_size = target_dim - current_dim
+                padding = torch.zeros(batch, target_size, pad_size, dtype=dtype, device=device)
+                latent = torch.cat([latent, padding], dim=2)
+            else:
+                # Crop
+                latent = latent[:, :, :target_dim]
+        
+        return latent
 
 class Hy3D21RefineLatent:
     @classmethod
@@ -2121,6 +2238,7 @@ NODE_CLASS_MAPPINGS = {
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData,
     "Hy3D21SimpleMeshlibDecimate": Hy3D21SimpleMeshlibDecimate,
     "Hy3D21FitLatent": Hy3D21FitLatent,
+    "Hy3D21BlendLatents": Hy3D21BlendLatents,
     "Hy3D21RefineLatent": Hy3D21RefineLatent,
     #"Hy3D21MultiViewsMeshGenerator": Hy3D21MultiViewsMeshGenerator,
     }
@@ -2151,6 +2269,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": "Hunyuan 3D 2.1 HighPoly to LowPoly Bake MultiViews With MetaData",
     "Hy3D21SimpleMeshlibDecimate": "Hunyuan 3D 2.1 Simple Meshlib Decimation",
     "Hy3D21FitLatent": "Hunyuan 3D 2.1 Fit Latent Size",
+    "Hy3D21BlendLatents": "Hunyuan 3D 2.1 Blend Latents",
     "Hy3D21RefineLatent": "Hunyuan 3D 2.1 Refine Latent",
     #"Hy3D21MultiViewsMeshGenerator": "Hunyuan 3D 2.1 MultiViews Mesh Generator"
     }
