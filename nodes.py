@@ -2156,6 +2156,53 @@ class Hy3D21BlendLatents:
         
         return latent
 
+class Hy3D21LatentInfo:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("HY3DLATENT", {"tooltip": "Latent to inspect"}),
+            },
+        }
+
+    RETURN_TYPES = ("HY3DLATENT",)
+    RETURN_NAMES = ("latents",)
+    FUNCTION = "info"
+    CATEGORY = "Hunyuan3D21Wrapper"
+    OUTPUT_NODE = True
+    DESCRIPTION = "Displays information about a latent tensor. Useful for debugging."
+
+    def info(self, latents):
+        print("=" * 60)
+        print("LATENT INFORMATION")
+        print("=" * 60)
+        print(f"Shape:        {latents.shape}")
+        print(f"Dtype:        {latents.dtype}")
+        print(f"Device:       {latents.device}")
+        print(f"Min value:    {latents.min().item():.6f}")
+        print(f"Max value:    {latents.max().item():.6f}")
+        print(f"Mean value:   {latents.mean().item():.6f}")
+        print(f"Std dev:      {latents.std().item():.6f}")
+        
+        # Check for any NaN or Inf values
+        has_nan = torch.isnan(latents).any().item()
+        has_inf = torch.isinf(latents).any().item()
+        print(f"Contains NaN: {has_nan}")
+        print(f"Contains Inf: {has_inf}")
+        
+        # Check for zero-sized dimensions
+        has_zero_dim = any(d == 0 for d in latents.shape)
+        print(f"Has zero-sized dimension: {has_zero_dim}")
+        
+        print("=" * 60)
+        
+        if has_nan or has_inf:
+            print("WARNING: Latent contains NaN or Inf values!")
+        if has_zero_dim:
+            print("ERROR: Latent has a zero-sized dimension!")
+        
+        return (latents,)
+
 class Hy3D21RefineLatent:
     @classmethod
     def INPUT_TYPES(s):
@@ -2239,6 +2286,7 @@ NODE_CLASS_MAPPINGS = {
     "Hy3D21SimpleMeshlibDecimate": Hy3D21SimpleMeshlibDecimate,
     "Hy3D21FitLatent": Hy3D21FitLatent,
     "Hy3D21BlendLatents": Hy3D21BlendLatents,
+    "Hy3D21LatentInfo": Hy3D21LatentInfo,
     "Hy3D21RefineLatent": Hy3D21RefineLatent,
     #"Hy3D21MultiViewsMeshGenerator": Hy3D21MultiViewsMeshGenerator,
     }
@@ -2270,6 +2318,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Hy3D21SimpleMeshlibDecimate": "Hunyuan 3D 2.1 Simple Meshlib Decimation",
     "Hy3D21FitLatent": "Hunyuan 3D 2.1 Fit Latent Size",
     "Hy3D21BlendLatents": "Hunyuan 3D 2.1 Blend Latents",
+    "Hy3D21LatentInfo": "Hunyuan 3D 2.1 Latent Info",
     "Hy3D21RefineLatent": "Hunyuan 3D 2.1 Refine Latent",
     #"Hy3D21MultiViewsMeshGenerator": "Hunyuan 3D 2.1 MultiViews Mesh Generator"
     }

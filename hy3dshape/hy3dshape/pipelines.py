@@ -492,6 +492,36 @@ class Hunyuan3DDiTPipeline:
         if latents is None:
             latents = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
         else:
+            # Validate existing latents shape
+            if len(latents.shape) != 3:
+                raise ValueError(f"Expected latents to have 3 dimensions [batch, num_latents, embed_dim], got shape {latents.shape}")
+            
+            latent_batch = latents.shape[0]
+            latent_num = latents.shape[1]
+            latent_dim = latents.shape[2]
+            expected_num = self.vae.latent_shape[0]
+            expected_dim = self.vae.latent_shape[1]
+            
+            print(f"Preparing latents - Input shape: {latents.shape}, Expected shape: {shape}")
+            
+            # Check if any dimension is zero
+            if latent_batch == 0 or latent_num == 0 or latent_dim == 0:
+                raise ValueError(f"Latent tensor has zero-sized dimension: batch={latent_batch}, num_latents={latent_num}, embed_dim={latent_dim}")
+            
+            # Allow batch size mismatch (will be handled by the model)
+            if latent_batch != batch_size:
+                print(f"Warning: Latent batch size {latent_batch} doesn't match expected {batch_size}. Using latent batch size.")
+                batch_size = latent_batch
+            
+            # Validate latent dimensions match VAE expectations
+            if latent_num != expected_num or latent_dim != expected_dim:
+                raise ValueError(
+                    f"Latent dimensions don't match VAE expectations!\n"
+                    f"Got: [batch={latent_batch}, num_latents={latent_num}, embed_dim={latent_dim}]\n"
+                    f"Expected: [batch={batch_size}, num_latents={expected_num}, embed_dim={expected_dim}]\n"
+                    f"Use Hy3D21FitLatent node to resize the latent to match the model."
+                )
+            
             latents = latents.to(device)
 
         # scale the initial noise by the standard deviation required by the scheduler
@@ -761,10 +791,36 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         if latents is not None and denoising_strength < 1.0:
             # Start from a later timestep based on denoising_strength
             start_step = int(num_inference_steps * (1 - denoising_strength))
+            # Ensure we don't skip all steps
+            start_step = min(start_step, num_inference_steps - 1)
+            start_step = max(start_step, 0)
             timesteps = timesteps[start_step:]
             num_inference_steps = len(timesteps)
+            print(f"Refinement mode: starting from step {start_step}, running {num_inference_steps} steps with denoising_strength={denoising_strength}")
         
+        # Validate timesteps
+        if len(timesteps) == 0:
+            raise ValueError(f"No timesteps to run! num_inference_steps={num_inference_steps}, denoising_strength={denoising_strength}")
+        
+        # Prepare latents - need to know if we're refining before preparing
+        is_refinement = latents is not None
+        input_latents = latents
         latents = self.prepare_latents(batch_size, dtype, device, generator, latents=latents)
+        
+        # If refining with denoising_strength < 1.0, add noise to the latent for flow matching
+        if is_refinement and denoising_strength > 0.0 and denoising_strength < 1.0:
+            # For flow matching: interpolate between noise and the input latent
+            # The starting point is determined by denoising_strength
+            noise = randn_tensor(latents.shape, generator=generator, device=device, dtype=dtype)
+            noise = noise * getattr(self.scheduler, 'init_noise_sigma', 1.0)
+            
+            # t=0 is pure latent, t=1 is pure noise in flow matching
+            # denoising_strength controls how much we move from latent toward noise
+            t_start = denoising_strength  # This determines the noise level
+            
+            # Linear interpolation: latent * (1-t) + noise * t
+            latents = input_latents * (1.0 - t_start) + noise * t_start
+            print(f"Flow matching refinement: blended latent with noise at t={t_start:.3f} (denoising_strength={denoising_strength})")
 
         guidance = None
         if hasattr(self.model, 'guidance_embed') and \
