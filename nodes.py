@@ -1955,7 +1955,63 @@ class Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData:
         else:
             print('target_face_nums is empty')       
         
-        return (output_lowpoly_path,)        
+        return (output_lowpoly_path,)
+
+class Hy3D21RefineLatent:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": (folder_paths.get_filename_list("diffusion_models"), {"tooltip": "These models are loaded from the 'ComfyUI/models/diffusion_models' folder"}),
+                "latents": ("HY3DLATENT", {"tooltip": "Existing latent to refine"}),
+                "image": ("IMAGE", {"tooltip": "Image to condition the refinement"}),
+                "steps": ("INT", {"default": 50, "min": 1, "max": 100, "step": 1, "tooltip": "Number of diffusion steps"}),
+                "denoising_strength": ("FLOAT", {"default": 0.5, "min": 0.0, "max": 1.0, "step": 0.01, "tooltip": "How much to refine (0.0 = no change, 1.0 = full generation)"}),
+                "guidance_scale": ("FLOAT", {"default": 5.0, "min": 1, "max": 30, "step": 0.1, "tooltip": "Guidance scale"}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+                "attention_mode": (["sdpa", "sageattn"], {"default": "sdpa"}),
+            },
+        }
+
+    RETURN_TYPES = ("HY3DLATENT",)
+    RETURN_NAMES = ("latents",)
+    FUNCTION = "refine"
+    CATEGORY = "Hunyuan3D21Wrapper"
+    DESCRIPTION = "Refines an existing latent with new image conditioning. Use this to refine a 2.0 generation with 2.1 model."
+
+    def refine(self, model, latents, image, steps, denoising_strength, guidance_scale, seed, attention_mode):
+        device = mm.get_torch_device()
+        offload_device = mm.unet_offload_device()
+        
+        seed = seed % (2**32)
+
+        model_path = folder_paths.get_full_path("diffusion_models", model)
+        
+        pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_single_file(
+            config_path=os.path.join(script_directory, 'configs', 'dit_config_2_1.yaml'),
+            ckpt_path=model_path,
+            offload_device=offload_device,
+            attention_mode=attention_mode)
+        
+        image = tensor2pil(image)
+        
+        # Pass the existing latents to the pipeline for refinement
+        refined_latents = pipeline(
+            image=image,
+            num_inference_steps=steps,
+            guidance_scale=guidance_scale,
+            generator=torch.manual_seed(seed),
+            latents=latents,
+            denoising_strength=denoising_strength
+        )
+            
+        del pipeline
+        
+        mm.soft_empty_cache()
+        torch.cuda.empty_cache()
+        gc.collect()            
+        
+        return (refined_latents,)
 
 NODE_CLASS_MAPPINGS = {
     "Hy3DMeshGenerator": Hy3DMeshGenerator,
@@ -1982,6 +2038,7 @@ NODE_CLASS_MAPPINGS = {
     "Hy3DBakeMultiViewsWithMetaData": Hy3DBakeMultiViewsWithMetaData,
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData,
     "Hy3D21SimpleMeshlibDecimate": Hy3D21SimpleMeshlibDecimate,
+    "Hy3D21RefineLatent": Hy3D21RefineLatent,
     #"Hy3D21MultiViewsMeshGenerator": Hy3D21MultiViewsMeshGenerator,
     }
     
@@ -2010,5 +2067,6 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Hy3DBakeMultiViewsWithMetaData": "Hunyuan 3D 2.1 Bake MultiViews With MetaData",
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": "Hunyuan 3D 2.1 HighPoly to LowPoly Bake MultiViews With MetaData",
     "Hy3D21SimpleMeshlibDecimate": "Hunyuan 3D 2.1 Simple Meshlib Decimation",
+    "Hy3D21RefineLatent": "Hunyuan 3D 2.1 Refine Latent",
     #"Hy3D21MultiViewsMeshGenerator": "Hunyuan 3D 2.1 MultiViews Mesh Generator"
     }

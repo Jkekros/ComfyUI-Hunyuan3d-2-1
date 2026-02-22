@@ -719,6 +719,8 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
         output_type: Optional[str] = "trimesh",
         enable_pbar=True,
         mask = None,
+        latents: Optional[torch.Tensor] = None,
+        denoising_strength: float = 1.0,
         **kwargs,
     ) -> List[List[trimesh.Trimesh]]:
         callback = kwargs.pop("callback", None)
@@ -754,7 +756,15 @@ class Hunyuan3DDiTFlowMatchingPipeline(Hunyuan3DDiTPipeline):
             device,
             sigmas=sigmas,
         )
-        latents = self.prepare_latents(batch_size, dtype, device, generator)
+        
+        # Adjust timesteps for denoising strength (img2img style refinement)
+        if latents is not None and denoising_strength < 1.0:
+            # Start from a later timestep based on denoising_strength
+            start_step = int(num_inference_steps * (1 - denoising_strength))
+            timesteps = timesteps[start_step:]
+            num_inference_steps = len(timesteps)
+        
+        latents = self.prepare_latents(batch_size, dtype, device, generator, latents=latents)
 
         guidance = None
         if hasattr(self.model, 'guidance_embed') and \
