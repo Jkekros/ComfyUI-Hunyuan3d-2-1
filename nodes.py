@@ -1957,6 +1957,88 @@ class Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData:
         
         return (output_lowpoly_path,)
 
+class Hy3D21FitLatent:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("HY3DLATENT", {"tooltip": "Latent to resize/fit"}),
+                "target_size": ("INT", {"default": 4096, "min": 256, "max": 16384, "step": 256, "tooltip": "Target latent size (e.g., 4096 for 2.1 model)"}),
+                "mode": (["interpolate", "pad", "crop", "pad_or_crop"], {"default": "interpolate", "tooltip": "How to adjust size: interpolate=resize, pad=add zeros, crop=remove, pad_or_crop=auto"}),
+            },
+        }
+
+    RETURN_TYPES = ("HY3DLATENT",)
+    RETURN_NAMES = ("latents",)
+    FUNCTION = "fit"
+    CATEGORY = "Hunyuan3D21Wrapper"
+    DESCRIPTION = "Adjusts latent dimensions to match target size. Useful when moving between different model versions."
+
+    def fit(self, latents, target_size, mode):
+        device = latents.device
+        dtype = latents.dtype
+        
+        # latents shape is typically [batch, num_latents, embed_dim]
+        batch_size = latents.shape[0]
+        current_size = latents.shape[1]
+        embed_dim = latents.shape[2]
+        
+        print(f"Fitting latent from {current_size} to {target_size} using mode '{mode}'")
+        
+        if current_size == target_size:
+            print("Latent already at target size, no adjustment needed")
+            return (latents,)
+        
+        if mode == "interpolate":
+            # Reshape for interpolation: [B, C, L] where L is the sequence length
+            latents_reshaped = latents.transpose(1, 2)  # [B, embed_dim, num_latents]
+            
+            # Interpolate along the latent dimension
+            fitted_latents = F.interpolate(
+                latents_reshaped, 
+                size=target_size, 
+                mode='linear', 
+                align_corners=False
+            )
+            
+            # Transpose back: [B, num_latents, embed_dim]
+            fitted_latents = fitted_latents.transpose(1, 2)
+            
+        elif mode == "pad":
+            if current_size < target_size:
+                # Pad with zeros
+                pad_size = target_size - current_size
+                padding = torch.zeros(batch_size, pad_size, embed_dim, dtype=dtype, device=device)
+                fitted_latents = torch.cat([latents, padding], dim=1)
+            else:
+                # Already larger, just crop to target
+                fitted_latents = latents[:, :target_size, :]
+                
+        elif mode == "crop":
+            if current_size > target_size:
+                # Crop to target size
+                fitted_latents = latents[:, :target_size, :]
+            else:
+                # Already smaller, pad with zeros
+                pad_size = target_size - current_size
+                padding = torch.zeros(batch_size, pad_size, embed_dim, dtype=dtype, device=device)
+                fitted_latents = torch.cat([latents, padding], dim=1)
+                
+        elif mode == "pad_or_crop":
+            if current_size < target_size:
+                # Pad with zeros
+                pad_size = target_size - current_size
+                padding = torch.zeros(batch_size, pad_size, embed_dim, dtype=dtype, device=device)
+                fitted_latents = torch.cat([latents, padding], dim=1)
+            else:
+                # Crop to target size
+                fitted_latents = latents[:, :target_size, :]
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+        
+        print(f"Fitted latent shape: {fitted_latents.shape}")
+        return (fitted_latents,)
+
 class Hy3D21RefineLatent:
     @classmethod
     def INPUT_TYPES(s):
@@ -2038,6 +2120,7 @@ NODE_CLASS_MAPPINGS = {
     "Hy3DBakeMultiViewsWithMetaData": Hy3DBakeMultiViewsWithMetaData,
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData,
     "Hy3D21SimpleMeshlibDecimate": Hy3D21SimpleMeshlibDecimate,
+    "Hy3D21FitLatent": Hy3D21FitLatent,
     "Hy3D21RefineLatent": Hy3D21RefineLatent,
     #"Hy3D21MultiViewsMeshGenerator": Hy3D21MultiViewsMeshGenerator,
     }
@@ -2067,6 +2150,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Hy3DBakeMultiViewsWithMetaData": "Hunyuan 3D 2.1 Bake MultiViews With MetaData",
     "Hy3DHighPolyToLowPolyBakeMultiViewsWithMetaData": "Hunyuan 3D 2.1 HighPoly to LowPoly Bake MultiViews With MetaData",
     "Hy3D21SimpleMeshlibDecimate": "Hunyuan 3D 2.1 Simple Meshlib Decimation",
+    "Hy3D21FitLatent": "Hunyuan 3D 2.1 Fit Latent Size",
     "Hy3D21RefineLatent": "Hunyuan 3D 2.1 Refine Latent",
     #"Hy3D21MultiViewsMeshGenerator": "Hunyuan 3D 2.1 MultiViews Mesh Generator"
     }
