@@ -2156,6 +2156,123 @@ class Hy3D21BlendLatents:
         
         return latent
 
+class Hy3D21ConvertLatent:
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "latents": ("HY3DLATENT", {"tooltip": "Latent from 2.0 wrapper or other source"}),
+                "source_format": (["auto", "2.0", "2.1"], {"default": "auto", "tooltip": "Source latent format"}),
+                "target_format": (["2.1", "2.0"], {"default": "2.1", "tooltip": "Target latent format"}),
+                "target_num_latents": ("INT", {"default": 4096, "min": 256, "max": 16384, "step": 256, "tooltip": "Target number of latents (2.1=4096, 2.0 varies)"}),
+                "target_embed_dim": ("INT", {"default": 64, "min": 8, "max": 512, "step": 8, "tooltip": "Target embedding dimension (2.1=64)"}),
+            },
+        }
+
+    RETURN_TYPES = ("HY3DLATENT",)
+    RETURN_NAMES = ("latents",)
+    FUNCTION = "convert"
+    CATEGORY = "Hunyuan3D21Wrapper"
+    DESCRIPTION = "Converts latents between 2.0 and 2.1 formats. Use when mixing models from different versions."
+
+    def convert(self, latents, source_format, target_format, target_num_latents, target_embed_dim):
+        device = latents.device
+        dtype = latents.dtype
+        
+        print("=" * 70)
+        print("LATENT CONVERSION")
+        print("=" * 70)
+        print(f"Input shape:  {latents.shape}")
+        print(f"Input dtype:  {dtype}, device: {device}")
+        
+        # Validate input
+        if len(latents.shape) != 3:
+            raise ValueError(f"Expected 3D latent tensor [batch, num_latents, embed_dim], got shape {latents.shape}")
+        
+        batch_size = latents.shape[0]
+        current_num_latents = latents.shape[1]
+        current_embed_dim = latents.shape[2]
+        
+        print(f"Current:      [batch={batch_size}, num_latents={current_num_latents}, embed_dim={current_embed_dim}]")
+        print(f"Target:       [batch={batch_size}, num_latents={target_num_latents}, embed_dim={target_embed_dim}]")
+        
+        # Auto-detect source format if needed
+        if source_format == "auto":
+            if current_num_latents == 4096 and current_embed_dim == 64:
+                source_format = "2.1"
+                print("Auto-detected: 2.1 format")
+            else:
+                source_format = "2.0"
+                print("Auto-detected: 2.0 format (or custom)")
+        
+        print(f"Converting:   {source_format} → {target_format}")
+        
+        # If already at target format, return as-is
+        if current_num_latents == target_num_latents and current_embed_dim == target_embed_dim:
+            print("Already at target dimensions, no conversion needed")
+            print("=" * 70)
+            return (latents,)
+        
+        converted_latents = latents
+        
+        # Step 1: Convert num_latents dimension
+        if current_num_latents != target_num_latents:
+            print(f"Resizing num_latents: {current_num_latents} → {target_num_latents}")
+            # Reshape to [B, C, N] for interpolation
+            converted_latents = converted_latents.permute(0, 2, 1)
+            converted_latents = F.interpolate(
+                converted_latents,
+                size=target_num_latents,
+                mode='linear',
+                align_corners=False
+            )
+            # Back to [B, N, C]
+            converted_latents = converted_latents.permute(0, 2, 1)
+            print(f"After num_latents resize: {converted_latents.shape}")
+        
+        # Step 2: Convert embed_dim dimension
+        current_embed_dim = converted_latents.shape[2]
+        if current_embed_dim != target_embed_dim:
+            print(f"Resizing embed_dim: {current_embed_dim} → {target_embed_dim}")
+            
+            if current_embed_dim < target_embed_dim:
+                # Pad with zeros
+                pad_size = target_embed_dim - current_embed_dim
+                padding = torch.zeros(batch_size, target_num_latents, pad_size, dtype=dtype, device=device)
+                converted_latents = torch.cat([converted_latents, padding], dim=2)
+                print(f"Padded with {pad_size} zeros")
+            else:
+                # Interpolate or crop
+                # Use interpolation for better quality
+                converted_latents = converted_latents.permute(0, 1, 2).contiguous()
+                # Reshape to [B*N, C] for 1D interpolation
+                converted_latents = converted_latents.view(batch_size * target_num_latents, current_embed_dim)
+                converted_latents = converted_latents.unsqueeze(1)  # [B*N, 1, C]
+                converted_latents = F.interpolate(
+                    converted_latents,
+                    size=target_embed_dim,
+                    mode='linear',
+                    align_corners=False
+                )
+                converted_latents = converted_latents.squeeze(1)  # [B*N, target_embed_dim]
+                converted_latents = converted_latents.view(batch_size, target_num_latents, target_embed_dim)
+                print(f"Interpolated embed_dim")
+            
+            print(f"After embed_dim resize: {converted_latents.shape}")
+        
+        # Validate output
+        if converted_latents.shape != (batch_size, target_num_latents, target_embed_dim):
+            raise ValueError(
+                f"Conversion failed! Expected shape [{batch_size}, {target_num_latents}, {target_embed_dim}], "
+                f"got {converted_latents.shape}"
+            )
+        
+        print(f"Output shape: {converted_latents.shape}")
+        print("Conversion successful!")
+        print("=" * 70)
+        
+        return (converted_latents,)
+
 class Hy3D21LatentInfo:
     @classmethod
     def INPUT_TYPES(s):
@@ -2286,6 +2403,7 @@ NODE_CLASS_MAPPINGS = {
     "Hy3D21SimpleMeshlibDecimate": Hy3D21SimpleMeshlibDecimate,
     "Hy3D21FitLatent": Hy3D21FitLatent,
     "Hy3D21BlendLatents": Hy3D21BlendLatents,
+    "Hy3D21ConvertLatent": Hy3D21ConvertLatent,
     "Hy3D21LatentInfo": Hy3D21LatentInfo,
     "Hy3D21RefineLatent": Hy3D21RefineLatent,
     #"Hy3D21MultiViewsMeshGenerator": Hy3D21MultiViewsMeshGenerator,
@@ -2318,6 +2436,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "Hy3D21SimpleMeshlibDecimate": "Hunyuan 3D 2.1 Simple Meshlib Decimation",
     "Hy3D21FitLatent": "Hunyuan 3D 2.1 Fit Latent Size",
     "Hy3D21BlendLatents": "Hunyuan 3D 2.1 Blend Latents",
+    "Hy3D21ConvertLatent": "Hunyuan 3D 2.1 Convert Latent Format",
     "Hy3D21LatentInfo": "Hunyuan 3D 2.1 Latent Info",
     "Hy3D21RefineLatent": "Hunyuan 3D 2.1 Refine Latent",
     #"Hy3D21MultiViewsMeshGenerator": "Hunyuan 3D 2.1 MultiViews Mesh Generator"
